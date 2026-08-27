@@ -1,6 +1,7 @@
 package com.chen91552.dingtalkpinjoin;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.Application;
 import android.content.Context;
 import android.graphics.drawable.GradientDrawable;
@@ -8,6 +9,8 @@ import android.graphics.drawable.StateListDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -26,6 +29,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private static final String DINGTALK_PKG = "com.alibaba.android.rimet";
     private static final String TAG = "PinJoin";
+
+    /** 作者标注（不展示给用户，仅编译进 dex 供溯源）。 */
+    @SuppressWarnings("unused")
+    private static final String AUTHOR = "https://github.com/chern91552/dingtalk-pin-join";
 
     // ---- 全局状态 ----
     public static volatile String curCid;
@@ -93,6 +100,15 @@ public class MainHook implements IXposedHookLoadPackage {
         } catch (Throwable e) {
             android.util.Log.e(TAG, "hook ConversationSettingsActivity FAIL: " + e);
         }
+
+        // Hook rwm.h() —— 卡片渲染时捕获 nexturl（静默加群用）
+        try {
+            Class<?> rwm = XposedHelpers.findClass("rwm", cl);
+            XposedBridge.hookAllMethods(rwm, "h", new DurboProbe());
+            android.util.Log.i(TAG, "hook rwm.h OK");
+        } catch (Throwable e) {
+            android.util.Log.e(TAG, "hook rwm.h FAIL: " + e);
+        }
     }
 
     // ==================== 全局 Activity 跟踪 ====================
@@ -147,6 +163,15 @@ public class MainHook implements IXposedHookLoadPackage {
             btnJoin.setOnClickListener(new JoinLoop(act, cid));
             row.addView(btnJoin);
 
+            View btnSilent = buildGridCell(act, "🔇\n静默加群", "后台连续加群不跳页", dark);
+            btnSilent.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showSilentJoinDialog(act, cid);
+                }
+            });
+            row.addView(btnSilent);
+
             View btnLink = buildGridCell(act, "🔗\n提取本群链接", "复制邀请链接到剪贴板", dark);
             btnLink.setOnClickListener(new ProbeLink(act, cid));
             row.addView(btnLink);
@@ -154,6 +179,50 @@ public class MainHook implements IXposedHookLoadPackage {
             container.addView(row);
         } catch (Exception e) {
             android.util.Log.e("PinJoin", "inject ERR: " + e.getMessage());
+        }
+    }
+
+    // ==================== 静默加群弹窗 ====================
+
+    private void showSilentJoinDialog(final Activity act, final String cid) {
+        try {
+            LinearLayout layout = new LinearLayout(act);
+            layout.setOrientation(LinearLayout.VERTICAL);
+            int pad = dp(act, 20);
+            layout.setPadding(pad, pad / 2, pad, 0);
+
+            final EditText et = new EditText(act);
+            et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            et.setText("3");
+            et.selectAll();
+            layout.addView(et);
+
+            final CheckBox cb = new CheckBox(act);
+            cb.setText("去除新会话标记");
+            cb.setChecked(false);
+            LinearLayout.LayoutParams cbp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            cbp.topMargin = dp(act, 8);
+            cb.setLayoutParams(cbp);
+            layout.addView(cb);
+
+            new AlertDialog.Builder(act)
+                    .setTitle("🔇 静默循环加群")
+                    .setMessage("输入要静默加入的群数量（无需打开页面）")
+                    .setView(layout)
+                    .setPositiveButton("开始", (dialog, which) -> {
+                        int n = 3;
+                        try {
+                            String text = et.getText().toString().trim();
+                            if (!text.isEmpty()) n = Integer.parseInt(text);
+                        } catch (Exception ignored) {}
+                        if (n < 1) n = 1;
+                        SilentJoin.start(cid, n, cb.isChecked());
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        } catch (Exception e) {
+            android.util.Log.e("PinJoin", "silent dialog ERR: " + e);
         }
     }
 
@@ -270,6 +339,26 @@ public class MainHook implements IXposedHookLoadPackage {
         return null;
     }
 
+    /**
+     * 递归检查 View 树中是否包含指定文本
+     */
+    private boolean findTextInView(View root, String text) {
+        if (root == null) return false;
+        try {
+            if (root instanceof TextView) {
+                CharSequence cs = ((TextView) root).getText();
+                if (cs != null && cs.toString().contains(text)) return true;
+            }
+            if (root instanceof ViewGroup) {
+                ViewGroup vg = (ViewGroup) root;
+                for (int i = 0; i < vg.getChildCount(); i++) {
+                    if (findTextInView(vg.getChildAt(i), text)) return true;
+                }
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
     // ==================== 辅助方法 ====================
 
     private String getCidFromActivity(Activity act, Class<?> cls) {
@@ -289,6 +378,16 @@ public class MainHook implements IXposedHookLoadPackage {
             if (cid != null && !cid.isEmpty()) return cid;
         } catch (Exception ignored) {}
 
+        return "";
+    }
+
+    private String getNameFromActivity(Activity act, Class<?> cls) {
+        try {
+            Object conv = cls.getMethod("getConversation").invoke(act);
+            if (conv != null) {
+                return (String) conv.getClass().getMethod("title").invoke(conv);
+            }
+        } catch (Exception ignored) {}
         return "";
     }
 
@@ -316,6 +415,14 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private static String getLogDir() {
         int uid = android.os.Process.myUid() / 100000;
-        return "/data/data/" + DINGTALK_PKG + "/files/lspilot/" + uid + "/log/";
+        // media 公共目录：adb 无 root 可直接 pull，便于验证/排查（与 smali 版 EnergyPaste 分开）
+        return "/storage/emulated/0/Android/media/" + DINGTALK_PKG
+                + "/PinJoin/" + uid + "/log/";
+    }
+
+    private static void log(String msg) {
+        try {
+            FileLogger.i(5, TAG, msg);
+        } catch (Exception ignored) {}
     }
 }
