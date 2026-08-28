@@ -13,7 +13,7 @@ import java.util.Locale;
  * 2 = summary（摘要日志：开始/每个群/完成/停止原因，只写文件不打 logcat），
  * 5 = system（详细调试日志）
  * <p>
- * 日志文件按日期切分，自动清理非当日文件。
+ * 日志文件按日期切分，自动清理超过保留天数的旧文件。
  */
 public class FileLogger {
 
@@ -23,6 +23,18 @@ public class FileLogger {
 
     private static final String NAME_SUMMARY = "summary";
     private static final String NAME_SYSTEM = "system";
+
+    /** 日志保留天数（含当天），早于此的旧日志在 init 时清理。 */
+    private static final int RETAIN_DAYS = 7;
+
+    /** 作者与授权声明，写在每个新日志文件开头。 */
+    private static final String AUTHOR_URL = "https://github.com/chern91552/dingtalk-pin-join";
+    private static final String[] BANNER = {
+            "==================================================",
+            " 作者 / 项目地址: " + AUTHOR_URL,
+            " 完全免费，禁止倒卖。使用相同代码需标注原作者。",
+            "==================================================",
+    };
 
     private static final SimpleDateFormat DATE_FMT =
             new SimpleDateFormat("yyyyMMdd", Locale.getDefault());
@@ -43,9 +55,10 @@ public class FileLogger {
         File d = new File(dir);
         if (!d.exists()) d.mkdirs();
 
-        // 清理非当日日志文件
+        // 清理超过保留天数的日志文件（保留近 RETAIN_DAYS 天，含今天）
         try {
-            String today = DATE_FMT.format(new Date());
+            String cutoff = DATE_FMT.format(
+                    new Date(System.currentTimeMillis() - (RETAIN_DAYS - 1L) * 86400000L));
             File[] files = d.listFiles((f, name) ->
                     name.startsWith(NAME_SUMMARY + "_") || name.startsWith(NAME_SYSTEM + "_"));
             if (files != null) {
@@ -54,7 +67,8 @@ public class FileLogger {
                     int idx = name.indexOf('_');
                     if (idx >= 0) {
                         String fileDate = name.substring(idx + 1, Math.min(idx + 9, name.length()));
-                        if (!fileDate.equals(today)) {
+                        // 文件名日期为 yyyyMMdd，可按字符串直接比较；早于 cutoff 的删除
+                        if (fileDate.length() == 8 && fileDate.compareTo(cutoff) < 0) {
                             f.delete();
                         }
                     }
@@ -74,7 +88,16 @@ public class FileLogger {
 
     private static FileWriter openWriter(String name, String date) {
         try {
-            return new FileWriter(new File(logDir, name + "_" + date + ".log"), true);
+            File f = new File(logDir, name + "_" + date + ".log");
+            boolean fresh = !f.exists() || f.length() == 0;
+            FileWriter w = new FileWriter(f, true);
+            if (fresh) {
+                for (String line : BANNER) {
+                    w.write(line + "\n");
+                }
+                w.flush();
+            }
+            return w;
         } catch (Exception ignored) {
             return null;
         }

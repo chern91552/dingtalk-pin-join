@@ -1,19 +1,39 @@
 # 钉钉置顶加群 (DingTalk Pin-to-Top Join Group)
 
-Xposed / LSPosed 模块，在钉钉群设置页注入菜单，自动点击聊天页顶部 OneBox 置顶卡片，循环完成连续加群。
+Xposed / LSPosed 模块。读取钉钉群顶部置顶卡片（OneBox / TopInteraction）中的下一群邀请链接，全后台自动连续加群，无需模拟点击 UI。
+
+> 作者 / 项目地址：https://github.com/chern91552/dingtalk-pin-join
+
+> **完全免费，禁止倒卖。** 使用相同代码需标注原作者（保留上方项目地址）。
 
 ## 功能
 
 | 特性 | 说明 |
 |------|------|
-| 菜单注入 | 群设置页动态添加「从本群开始加群」「提取本群链接」两个按钮 |
-| 模拟点击 | 构造 MotionEvent 注入触摸事件，点击 OneBox 置顶卡片 |
-| 自动确认 | 后台线程轮询加群确认页按钮，自动点击「加入」 |
-| 状态机循环 | watchdog 500ms 轮询，触摸落空自动补点，死链/过期自动停止 |
+| 静默加群 | 群设置页注入「开始静默加群」，纯后台读链接→校验→加群，无前台点击 |
+| 置顶链接读取 | 通过 `getChatContextByTypes(TOP_INTERACTION)` 拉取置顶卡片，经 WaveCard SDK 取 `cardData` |
+| 多置顶支持 | 一个群多张置顶（如公告卡在前、链接卡在后）时，批量拉取全部并逐张扫链接，命中即用 |
+| 双键兼容 | 链接键兼容 `ob_linkUrl`（内容卡）与 `nexturl`（`.schema` 拼车卡），优先取前者 |
+| 邀请码校验 | 从链接提取 `code`/`origin`，调 `verifyCodeV2` 解析目标群 cid，再 `addGroupMemberByQrcodeV4` 加群 |
+| 去重跳过 | 已在群内（`getConversationFromMemory` 命中）自动跳过，计入「已加过」 |
+| 未读标记清除 | 加入新群后清红点 / `firstJoin` 标记，队尾群多趟补清防止服务端晚下发复活标记 |
 | 群追踪 | 全局 ActivityLifecycleCallbacks + ChatMsgActivity.onResume 双路追踪前台群 |
 | 链接提取 | 调用 ConversationService.getCode 提取本群邀请链接，复制到剪贴板 |
-| 去重保护 | 确认页仍在前台时禁止重复点卡片，避免同一个群被加两次 |
-| 文件日志 | 按日期切分的摘要日志 + 详细系统日志，写入钉钉私有目录 |
+| 文件日志 | 按日期切分的摘要日志 + 详细系统日志 |
+
+## 功能演示
+
+### 群设置页注入效果
+
+群设置页底部自动注入三个功能按钮 + 页脚声明：
+
+![群设置页注入效果](docs/demo.jpg)
+
+### 静默加群演示
+
+点击「🔇 静默加群」输入数量后，全后台自动连续加群的完整流程演示：
+
+[▶ 播放演示视频](docs/demo.mp4)
 
 ## 已测试环境
 
@@ -24,50 +44,57 @@ Xposed / LSPosed 模块，在钉钉群设置页注入菜单，自动点击聊天
 | 钉钉 | 7.6.55 (versionCode 1168) |
 | 框架 | LSPosed |
 
-> 其他钉钉版本可能需要调整硬编码的类名/字段名（如 `ChatMsgActivity.T0`、`JoinGroupConfirmActivity.v0`/`c0`、资源 id `card_view_container`/`tv_verify_error`）。
+> 其他钉钉版本可能需要调整硬编码的混淆类名/字段名（如 `q8i`、`nf2`、`rwm`、`WaveCardSDKManager`、`ChatContextRequestModel`、`ApiEventListener`、`WaveCardModelListCallBack` 等）。这些名字会随钉钉版本变化，升级时需重新反编译对齐。
 
 ## 架构
 
 ```
-MainHook.java         # Xposed 入口，Hook 部署，菜单注入，注册全局 Activity 回调
-JoinLoop.java         # 加群循环状态机（watchdog 500ms 轮询、1s 补点、20s 死线）
-CardTapper.java       # 查找 card_view_container，注入触摸事件，返回三态(成功/无容器/未布局)
-AutoConfirm.java      # hook JoinGroupConfirmActivity.onCreate，自动点确认，过期/审批检测
-ActivityTracker.java  # Application.ActivityLifecycleCallbacks，可靠追踪 topActivity/curCid
-TopTracker.java       # hook ChatMsgActivity.onResume，更新 curCid（补充 ActivityTracker）
-SettingsResumeHook.java # 群设置页 onResume 时注入按钮
-ProbeLink.java        # 反射调用 ConversationService.getCode 提取邀请链接
-Toaster.java          # 主线程 Toast 封装
-FileLogger.java       # 按日期切分的文件日志（summary/system 两类）
+MainHook.java              # Xposed 入口，Hook 部署，菜单注入，注册全局 Activity 回调
+SilentJoin.java            # 静默加群状态机：链接→校验→加群→清未读→下一跳，计数与结果提示
+NextGroupFetcher.java      # 轮询 getChatContextByTypes(TOP_INTERACTION) 拉置顶卡片（重试 3 次）
+ChatContextListenerProxy.java # 解析 chatcontext 回调，收集全部可用置顶卡（boxObjectList）
+WaveCardFetcher.java       # 经 WaveCard SDK(rwm.q) 批量拉卡片数据，逐张扫 cardData 里的下一群链接
+WaveCardCallbackProxy.java # WaveCardModelListCallBack 回调代理
+VerifyCallbackProxy.java   # verifyCodeV2 回调代理：code→目标群 cid
+JoinCallbackProxy.java     # addGroupMemberByQrcodeV4 回调代理
+UnreadClearer.java         # 清新会话红点/firstJoin 标记，队尾群多趟补清
+ActivityTracker.java       # Application.ActivityLifecycleCallbacks，追踪 topActivity/curCid
+TopTracker.java            # hook ChatMsgActivity.onResume，更新 curCid
+SettingsResumeHook.java    # 群设置页 onResume 时注入按钮
+ProbeLink.java             # 反射调用 ConversationService.getCode 提取本群邀请链接
+CardTapper.java / JoinLoop.java / AutoConfirm.java # 旧的模拟点击加群路径（保留）
+Toaster.java               # 主线程 Toast 封装
+FileLogger.java            # 按日期切分的文件日志（summary/system 两类）
 ```
 
-### 加群流程
+### 静默加群流程
 
-1. 群设置页点「🔁 从本群开始加群」→ 输入数量
-2. 关闭设置页，延迟 400ms 后开始第一跳
-3. `CardTapper` 点击聊天页顶部🚕 OneBox 卡片
-4. 卡片打开加群确认页 → `AutoConfirm` 自动点「加入」
-5. `advanceFrom` 从确认页 `c0` 读取新群 cid，推进状态机
-6. 延迟 500ms 后从新群点下一张卡片；若确认页仍在前台则等 700ms 重试，绝不重复点
-7. 循环直到达到设定数量，或遇到过期二维码/死链/需审批群
+1. 群设置页点「开始静默加群」→ 输入数量 N
+2. `NextGroupFetcher` 对当前群发起 `getChatContextByTypes(TOP_INTERACTION)`（无卡最多重试 3 次）
+3. `ChatContextListenerProxy` 收集 `boxObjectList` 里**全部**可用置顶卡
+4. `WaveCardFetcher` 一次性批量拉取全部卡片数据（`rwm.q` 为 list API）
+5. 回调逐张扫 `cardData`，优先 `ob_linkUrl` 回退 `nexturl`，取到第一条链接即用
+6. 从链接提取 `code`/`origin` → `verifyCodeV2` 解析目标群 cid
+7. 已在群内则跳过（计入「已加过」）；否则 `addGroupMemberByQrcodeV4` 加群
+8. 清除新会话未读标记；以目标群为新起点重复 2–7，直到达到 N 或链接过期/无置顶卡
 
 ## 构建
 
 ```bash
-./gradlew assembleRelease
-# 输出: app/build/outputs/apk/release/app-release-unsigned.apk
-# 需自行签名后安装
+./gradlew assembleDebug
+# 输出: app/build/outputs/apk/debug/app-debug.apk
+# 或 assembleRelease 后自行签名
 ```
 
 ## 使用
 
 1. 安装 LSPosed / Xposed 框架
 2. 安装本模块 APK
-3. 在 LSPosed 中启用模块，作用域勾选钉钉
+3. 在 LSPosed 中启用模块，作用域勾选钉钉（`com.alibaba.android.rimet`）
 4. 强制停止钉钉后重新打开
 5. 进入任意群聊 → 群设置页，即可看到控制按钮
 
 ## 注意事项
 
 - 本项目仅限学习研究使用
-- 模块日志写入 `/data/data/com.alibaba.android.rimet/files/lspilot/<uid>/log/`（需 root 查看），详细日志同时输出到 logcat（tag: `PinJoin` / `JOIN_LOOP` / `AUTO_CONFIRM` / `CARD_TAP`）
+- 模块日志写入 `/storage/emulated/0/Android/media/com.alibaba.android.rimet/PinJoin/<uid>/log/`（无 root 可直接 `adb pull`），详细日志同时输出到 logcat（tag: `PinJoin` 等）
