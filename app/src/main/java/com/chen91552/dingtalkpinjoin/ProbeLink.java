@@ -120,7 +120,7 @@ public class ProbeLink implements View.OnClickListener, Runnable {
             for (Method m : callbackCls.getDeclaredMethods()) {
                 android.util.Log.i("PinJoin", "  callback method: " + m.getName());
             }
-            
+
             Object callback = Proxy.newProxyInstance(cl, new Class[]{callbackCls},
                     new InvocationHandler() {
                         @Override

@@ -4,8 +4,16 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Application;
 import android.content.Context;
+import android.content.Intent;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.net.Uri;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.method.LinkMovementMethod;
+import android.text.style.ClickableSpan;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.UnderlineSpan;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -177,6 +185,35 @@ public class MainHook implements IXposedHookLoadPackage {
             row.addView(btnLink);
 
             container.addView(row);
+
+            // 页脚：一行免费声明 + 可点击「项目地址」超链接（防倒卖，点击跳浏览器）
+            TextView footer = new TextView(act);
+            String prefix = "📢 完全免费 · 禁止倒卖 · ";
+            String linkText = "项目地址";
+            SpannableString sp = new SpannableString(prefix + linkText);
+            int start = prefix.length();
+            int end = start + linkText.length();
+            final int linkColor = dark ? 0xFF7AA7FF : 0xFF2B6CE6;
+            sp.setSpan(new ClickableSpan() {
+                @Override
+                public void onClick(View widget) {
+                    try {
+                        Intent it = new Intent(Intent.ACTION_VIEW, Uri.parse(AUTHOR));
+                        it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        act.startActivity(it);
+                    } catch (Exception ignored) {}
+                }
+            }, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sp.setSpan(new ForegroundColorSpan(linkColor), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sp.setSpan(new UnderlineSpan(), start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            footer.setText(sp);
+            footer.setMovementMethod(LinkMovementMethod.getInstance());
+            footer.setTextSize(11);
+            footer.setGravity(Gravity.CENTER);
+            footer.setTextColor(dark ? 0xFF9AA0A6 : 0xFF888888);
+            int fp = dp(act, 10);
+            footer.setPadding(fp, dp(act, 4), fp, fp);
+            container.addView(footer);
         } catch (Exception e) {
             android.util.Log.e("PinJoin", "inject ERR: " + e.getMessage());
         }

@@ -4,6 +4,8 @@ Xposed / LSPosed 模块。读取钉钉群顶部置顶卡片（OneBox / TopIntera
 
 > 作者 / 项目地址：https://github.com/chern91552/dingtalk-pin-join
 
+> **完全免费，禁止倒卖。** 使用相同代码需标注原作者（保留上方项目地址）。
+
 ## 功能
 
 | 特性 | 说明 |

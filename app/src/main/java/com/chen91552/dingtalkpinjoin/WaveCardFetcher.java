@@ -90,9 +90,18 @@ public class WaveCardFetcher {
     }
 
     /**
+     * cardData 里可能承载加群链接的候选键，按优先级排列。
+     * ob_linkUrl（contentCard 内容卡）、nexturl（.schema 拼车卡）是最常见的两种；
+     * 其余为 lippi-imopen 等 topbox-open-common 卡型出现过的 url 类键。
+     */
+    private static final String[] LINK_KEYS = {
+            "ob_linkUrl", "nexturl", "ob_jumpUrl", "ob_pc_jumpUrl",
+            "mobileUrl", "pcUrl", "addToUrl", "url",
+    };
+
+    /**
      * 解析 WaveCardModel 列表，提取 cardData JSON 中的下一群链接。
-     * 链接键有两种：ob_linkUrl（contentCard 内容卡）、nexturl（.schema 拼车卡），
-     * 优先取 ob_linkUrl，回退 nexturl。
+     * 逐个候选键取值，只接受真正含 code= 的 joingroup 链接，避免误取无关跳转 url。
      */
     static void onWaveCardResult(ArrayList<?> models) {
         try {
@@ -118,13 +127,10 @@ public class WaveCardFetcher {
                 String cardData = (String) cardViewData.get("cardData");
                 if (cardData == null) continue;
 
-                // 优先 ob_linkUrl（内容卡），回退 nexturl（拼车卡）
-                String linkUrl = jstr(cardData, "ob_linkUrl");
+                String linkUrl = pickLink(cardData);
                 if (linkUrl == null) {
-                    linkUrl = jstr(cardData, "nexturl");
-                }
-                if (linkUrl == null) {
-                    SilentJoin.log("WaveCard model[" + i + "] no link");
+                    // 未命中任一候选键：dump 原始 cardData，便于补齐新卡型的键名
+                    SilentJoin.log("WaveCard model[" + i + "] no link cardData=" + cardData);
                     continue;
                 }
                 SilentJoin.log("WaveCard linkUrl=" + linkUrl + " (model[" + i + "])");
@@ -138,6 +144,41 @@ public class WaveCardFetcher {
             SilentJoin.onError("解析卡片数据失败");
         }
     }
+
+    /**
+     * 从 cardData 中挑出加群链接：
+     *   ① 快路径：按候选键顺序取值，命中含 code= 的链接立即返回（常见卡走这条，不跑正则）；
+     *   ② 兜底：全文正则找 joingroup 链接，URLDecode 后再判 code=，
+     *      覆盖未列到的新键名、以及链接被 encode 进 deeplink（code%3D）的情况。
+     */
+    private static String pickLink(String cardData) {
+        // ① 快路径：候选键 + 明文 code=
+        for (String key : LINK_KEYS) {
+            String v = jstr(cardData, key);
+            if (v != null && v.contains("code=")) {
+                return v;
+            }
+        }
+        // ② 兜底：全文扫 joingroup 链接（兼容明文与 encode）
+        try {
+            java.util.regex.Matcher m = JOINGROUP_PATTERN.matcher(cardData);
+            while (m.find()) {
+                String u = m.group();
+                if (u.contains("code=")) {
+                    return u;
+                }
+                String dec = java.net.URLDecoder.decode(u, "UTF-8");
+                if (dec.contains("code=")) {
+                    return dec;
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    /** 匹配 joingroup 链接（明文或被 encode 进 deeplink 的 %2Fjoingroup 形式）。 */
+    private static final java.util.regex.Pattern JOINGROUP_PATTERN =
+            java.util.regex.Pattern.compile("https?[^\"\\\\\\s]*joingroup[^\"\\\\\\s]*");
 
     /** 从 JSON 文本中取键 key 的字符串值，找不到返回 null（值截到下一个引号）。 */
     private static String jstr(String json, String key) {
