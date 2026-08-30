@@ -9,21 +9,37 @@ import de.robv.android.xposed.XposedHelpers;
 public class JoinCallbackProxy implements InvocationHandler {
 
     private final String cid;
+    private final Object uid;
+    private final int origin;
+    private final String token;
+    private final String code;
+    private final long taskId;
+    private final int retryCount;
     private Object filterChain;
     private Object requestBuilder;
 
-    private JoinCallbackProxy(String cid) {
+    private JoinCallbackProxy(String cid, Object uid, int origin, String token, String code,
+                              long taskId, int retryCount) {
         this.cid = cid;
+        this.uid = uid;
+        this.origin = origin;
+        this.token = token;
+        this.code = code;
+        this.taskId = taskId;
+        this.retryCount = retryCount;
     }
 
-    static Object create(ClassLoader cl, String cid) {
+    static Object create(ClassLoader cl, String cid, Object uid, int origin, String token,
+                         String code, long taskId, int retryCount) {
         Class<?> iface;
         try {
             iface = Class.forName("com.laiwang.idl.client.RequestHandler", true, cl);
         } catch (ClassNotFoundException e) {
             throw new RuntimeException("RequestHandler not found", e);
         }
-        return Proxy.newProxyInstance(cl, new Class[]{iface}, new JoinCallbackProxy(cid));
+        return Proxy.newProxyInstance(cl, new Class[]{iface},
+                new JoinCallbackProxy(
+                        cid, uid, origin, token, code, taskId, retryCount));
     }
 
     @Override
@@ -32,20 +48,28 @@ public class JoinCallbackProxy implements InvocationHandler {
         try {
             switch (name) {
                 case "onSuccess":
-                    SilentJoin.onJoinOk(cid);
+                    SilentJoin.onJoinOk(cid, taskId);
                     break;
                 case "caught":
                 case "onException":
                 case "onFailure":
-                    String err = "加群失败";
+                    String error = RetryPolicy.describe(args, "加群失败");
                     if (args != null && args.length > 0 && args[0] != null) {
                         try {
                             Object resultError = args[0];
                             String reason = (String) XposedHelpers.getObjectField(resultError, "reason");
-                            if (reason != null && !reason.isEmpty()) err = reason;
+                            if (reason != null && !reason.isEmpty()) error = reason;
                         } catch (Throwable ignored) {}
                     }
-                    SilentJoin.onError(err);
+                    final String failure = error;
+                    if (RetryPolicy.retryIfTransient(taskId, "提交加群", retryCount, failure,
+                            () -> SilentJoin.doAddMember(
+                                    cid, uid, origin, token, code,
+                                    taskId, retryCount + 1))) {
+                        break;
+                    }
+                    SilentJoin.onError(
+                            taskId, RetryPolicy.userMessage(failure, "加群失败"));
                     break;
                 case "handleRequest":
                     return Boolean.TRUE;

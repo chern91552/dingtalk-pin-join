@@ -10,7 +10,8 @@ public class DurboProbe extends XC_MethodHook {
 
     @Override
     protected void afterHookedMethod(MethodHookParam param) {
-        if (!SilentJoin.running) return;
+        long taskId = SilentJoin.getActiveTaskId();
+        if (!SilentJoin.isActive(taskId)) return;
         try {
             Object result = param.getResult();
             if (result == null) return;
@@ -29,7 +30,7 @@ public class DurboProbe extends XC_MethodHook {
             if (end < 0) return;
 
             String nexturl = cardDataStr.substring(start, end);
-            SilentJoin.onNextUrl(nexturl);
+            SilentJoin.onNextUrl(nexturl, taskId);
         } catch (Throwable ignored) {}
     }
 }

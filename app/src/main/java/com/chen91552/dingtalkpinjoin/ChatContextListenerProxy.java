@@ -11,17 +11,19 @@ public class ChatContextListenerProxy implements InvocationHandler {
 
     private final String cid;
     private final int attempt;
+    private final long taskId;
 
-    private ChatContextListenerProxy(String cid, int attempt) {
+    private ChatContextListenerProxy(String cid, int attempt, long taskId) {
         this.cid = cid;
         this.attempt = attempt;
+        this.taskId = taskId;
     }
 
-    static Object create(ClassLoader cl, String cid, int attempt) throws Exception {
+    static Object create(ClassLoader cl, String cid, int attempt, long taskId) throws Exception {
         Class<?> iface = Class.forName(
                 "com.alibaba.android.dingtalkbase.rpc.ApiEventListener", true, cl);
         return Proxy.newProxyInstance(cl, new Class[]{iface},
-                new ChatContextListenerProxy(cid, attempt));
+                new ChatContextListenerProxy(cid, attempt, taskId));
     }
 
     @Override
@@ -30,6 +32,9 @@ public class ChatContextListenerProxy implements InvocationHandler {
         try {
             if ("onDataReceived".equals(name) && args != null && args.length > 0) {
                 handleData(args[0]);
+            } else if ("onException".equals(name) || "onFailure".equals(name)) {
+                NextGroupFetcher.onFetchFailure(
+                        cid, attempt, taskId, RetryPolicy.describe(args, "获取置顶卡片失败"));
             }
         } catch (Throwable t) {
             SilentJoin.log("ChatContext proxy ERR: " + t);
@@ -53,8 +58,9 @@ public class ChatContextListenerProxy implements InvocationHandler {
     }
 
     private void handleData(Object result) {
+        if (!SilentJoin.isActive(taskId)) return;
         if (!(result instanceof Collection)) {
-            NextGroupFetcher.onNoCard(cid, attempt);
+            NextGroupFetcher.onNoCard(cid, attempt, taskId);
             return;
         }
         // 收集群里所有可用置顶卡（一个群可能多张：公告/文本 + 链接卡），
@@ -116,12 +122,12 @@ public class ChatContextListenerProxy implements InvocationHandler {
         }
 
         if (boxes.isEmpty()) {
-            NextGroupFetcher.onNoCard(cid, attempt);
+            NextGroupFetcher.onNoCard(cid, attempt, taskId);
             return;
         }
         // 单通道：WaveSDK（rwm.q）批量拉全部置顶卡；回调逐张扫链接，命中即加群。
         // DingtalkWaveIService(CardDataFetcher) 通道被服务端拒"系统繁忙"，已移除。
         SilentJoin.log("[NEXT_FETCH] usable boxes=" + boxes.size());
-        NextGroupFetcher.onChatContextResult(cid, boxes);
+        NextGroupFetcher.onChatContextResult(cid, boxes, taskId);
     }
 }

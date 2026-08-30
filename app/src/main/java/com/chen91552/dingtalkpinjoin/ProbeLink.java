@@ -76,6 +76,7 @@ public class ProbeLink implements View.OnClickListener, Runnable {
      */
     private static String getCidFromIntent(Activity act) {
         try {
+            if (act == null || act.getIntent() == null) return "";
             String cid = act.getIntent().getStringExtra("conversation_id");
             if (cid != null && !cid.isEmpty()) return cid;
             cid = act.getIntent().getStringExtra("cid");
@@ -120,7 +121,7 @@ public class ProbeLink implements View.OnClickListener, Runnable {
             for (Method m : callbackCls.getDeclaredMethods()) {
                 android.util.Log.i("PinJoin", "  callback method: " + m.getName());
             }
-
+            
             Object callback = Proxy.newProxyInstance(cl, new Class[]{callbackCls},
                     new InvocationHandler() {
                         @Override

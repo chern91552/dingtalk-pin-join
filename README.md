@@ -16,24 +16,14 @@ Xposed / LSPosed 模块。读取钉钉群顶部置顶卡片（OneBox / TopIntera
 | 双键兼容 | 链接键兼容 `ob_linkUrl`（内容卡）与 `nexturl`（`.schema` 拼车卡），优先取前者 |
 | 邀请码校验 | 从链接提取 `code`/`origin`，调 `verifyCodeV2` 解析目标群 cid，再 `addGroupMemberByQrcodeV4` 加群 |
 | 去重跳过 | 已在群内（`getConversationFromMemory` 命中）自动跳过，计入「已加过」 |
+| 失败重试 | 网络超时、系统繁忙等临时错误退避重试 2 次；邀请码过期、需要审批等业务错误立即停止 |
 | 未读标记清除 | 加入新群后清红点 / `firstJoin` 标记，队尾群多趟补清防止服务端晚下发复活标记 |
+| 任务状态与停止 | 群设置页实时显示静默加群进度和当前群，可随时停止；任务 ID 隔离旧异步回调 |
 | 群追踪 | 全局 ActivityLifecycleCallbacks + ChatMsgActivity.onResume 双路追踪前台群 |
 | 链接提取 | 调用 ConversationService.getCode 提取本群邀请链接，复制到剪贴板 |
 | 文件日志 | 按日期切分的摘要日志 + 详细系统日志 |
-
-## 功能演示
-
-### 群设置页注入效果
-
-群设置页底部自动注入三个功能按钮 + 页脚声明：
-
-![群设置页注入效果](docs/demo.jpg)
-
-### 静默加群演示
-
-点击「🔇 静默加群」输入数量后，全后台自动连续加群的完整流程演示：
-
-[▶ 播放演示视频](docs/demo.mp4)
+| 日志查看 | 群设置页内查看近 7 天摘要日志，支持搜索、匹配跳转、顶部/底部、刷新和复制 |
+| 分类统计 | 摘要统一记录成功、已加过、无置顶、链接失效、需要审批、请求失败，任务结束输出完整统计 |
 
 ## 已测试环境
 
@@ -51,6 +41,8 @@ Xposed / LSPosed 模块。读取钉钉群顶部置顶卡片（OneBox / TopIntera
 ```
 MainHook.java              # Xposed 入口，Hook 部署，菜单注入，注册全局 Activity 回调
 SilentJoin.java            # 静默加群状态机：链接→校验→加群→清未读→下一跳，计数与结果提示
+SilentJoinStatusView.java  # 群设置页任务进度与停止操作
+RetryPolicy.java           # RPC 临时错误分类与 1s/2s 退避重试
 NextGroupFetcher.java      # 轮询 getChatContextByTypes(TOP_INTERACTION) 拉置顶卡片（重试 3 次）
 ChatContextListenerProxy.java # 解析 chatcontext 回调，收集全部可用置顶卡（boxObjectList）
 WaveCardFetcher.java       # 经 WaveCard SDK(rwm.q) 批量拉卡片数据，逐张扫 cardData 里的下一群链接
@@ -65,6 +57,7 @@ ProbeLink.java             # 反射调用 ConversationService.getCode 提取本�
 CardTapper.java / JoinLoop.java / AutoConfirm.java # 旧的模拟点击加群路径（保留）
 Toaster.java               # 主线程 Toast 封装
 FileLogger.java            # 按日期切分的文件日志（summary/system 两类）
+LogViewer.java             # 群设置页日志查看器（搜索、滚动定位、刷新、复制）
 ```
 
 ### 静默加群流程

@@ -39,10 +39,16 @@ public class WaveCardFetcher {
      * 回调返回 N 个 model。因此把群里所有可用置顶卡一起拉，回调再逐个扫链接，
      * 避免"第一个置顶是公告/文本、第二个才是链接"时卡在第一个上取不到。
      */
-    public static void fetchBatch(String cid, ArrayList<BoxRef> boxes) {
+    public static void fetchBatch(String cid, ArrayList<BoxRef> boxes, long taskId) {
+        fetchBatch(cid, boxes, taskId, 0);
+    }
+
+    private static void fetchBatch(String cid, ArrayList<BoxRef> boxes, long taskId,
+                                   int retryCount) {
+        if (!SilentJoin.isActive(taskId)) return;
         try {
             if (boxes == null || boxes.isEmpty()) {
-                SilentJoin.onError("该群没有置顶卡片");
+                SilentJoin.onError(taskId, "该群没有置顶卡片");
                 return;
             }
             ClassLoader cl = MainHook.getClassLoader();
@@ -78,14 +84,20 @@ public class WaveCardFetcher {
             // callback proxy
             Class<?> callbackCls = Class.forName(
                     "com.dingtalk.nest.wave_card.WaveCardModelListCallBack", true, cl);
-            Object callback = WaveCardCallbackProxy.create(cl, callbackCls);
+            Object callback = WaveCardCallbackProxy.create(
+                    cl, callbackCls, cid, boxes, taskId, retryCount);
 
             // rwm.q(svc, paramList, callback)
             XposedHelpers.callStaticMethod(rwm, "q", svc, paramList, callback);
             SilentJoin.log("WaveCard fetch sent count=" + paramList.size());
         } catch (Throwable t) {
             SilentJoin.log("WaveCardFetcher ERR: " + t);
-            SilentJoin.onError("获取卡片数据失败");
+            String error = String.valueOf(t);
+            if (!RetryPolicy.retryIfTransient(taskId, "读取卡片", retryCount, error,
+                    () -> fetchBatch(cid, boxes, taskId, retryCount + 1))) {
+                SilentJoin.onError(
+                        taskId, RetryPolicy.userMessage(error, "获取卡片数据失败"));
+            }
         }
     }
 
@@ -103,10 +115,11 @@ public class WaveCardFetcher {
      * 解析 WaveCardModel 列表，提取 cardData JSON 中的下一群链接。
      * 逐个候选键取值，只接受真正含 code= 的 joingroup 链接，避免误取无关跳转 url。
      */
-    static void onWaveCardResult(ArrayList<?> models) {
+    static void onWaveCardResult(ArrayList<?> models, long taskId) {
+        if (!SilentJoin.isActive(taskId)) return;
         try {
             if (models == null || models.isEmpty()) {
-                SilentJoin.onError("获取卡片数据失败");
+                SilentJoin.onError(taskId, "获取卡片数据失败");
                 return;
             }
             // 逐个 model 扫链接：只要有一张卡带链接就用它，全部没有才报错。
@@ -134,14 +147,14 @@ public class WaveCardFetcher {
                     continue;
                 }
                 SilentJoin.log("WaveCard linkUrl=" + linkUrl + " (model[" + i + "])");
-                SilentJoin.onNextUrl(linkUrl);
+                SilentJoin.onNextUrl(linkUrl, taskId);
                 return;
             }
             // 所有 model 都没有链接
-            SilentJoin.onError("卡片中没有下一群链接");
+            SilentJoin.onError(taskId, "卡片中没有下一群链接");
         } catch (Throwable t) {
             SilentJoin.log("onWaveCardResult ERR: " + t);
-            SilentJoin.onError("解析卡片数据失败");
+            SilentJoin.onError(taskId, "解析卡片数据失败");
         }
     }
 
@@ -192,8 +205,14 @@ public class WaveCardFetcher {
         return json.substring(start, end);
     }
 
-    static void onWaveCardFailure(Object error) {
-        SilentJoin.log("WaveCard failure: " + error);
-        SilentJoin.onError("获取卡片数据失败");
+    static void onWaveCardFailure(Object error, String cid, ArrayList<BoxRef> boxes,
+                                  int retryCount, long taskId) {
+        String detail = RetryPolicy.describe(new Object[]{error}, "获取卡片数据失败");
+        SilentJoin.log("WaveCard failure: " + detail);
+        if (!RetryPolicy.retryIfTransient(taskId, "读取卡片", retryCount, detail,
+                () -> fetchBatch(cid, boxes, taskId, retryCount + 1))) {
+            SilentJoin.onError(
+                    taskId, RetryPolicy.userMessage(detail, "获取卡片数据失败"));
+        }
     }
 }

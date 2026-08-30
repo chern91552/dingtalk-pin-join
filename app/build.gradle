@@ -10,26 +10,13 @@ android {
         applicationId "com.chen91552.dingtalkpinjoin"
         minSdk 24
         targetSdk 34
-        versionCode 3
-        versionName "2.1.0"
-    }
-
-    signingConfigs {
-        release {
-            storeFile file("../pinjoin.keystore")
-            storePassword "android"
-            keyAlias "pinjoin"
-            keyPassword "android"
-        }
+        versionCode 4
+        versionName "2.2.0"
     }
 
     buildTypes {
-        debug {
-            signingConfig signingConfigs.release
-        }
         release {
             minifyEnabled false
-            signingConfig signingConfigs.release
         }
     }
 

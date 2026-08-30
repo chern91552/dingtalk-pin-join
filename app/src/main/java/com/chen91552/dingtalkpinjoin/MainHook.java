@@ -186,14 +186,32 @@ public class MainHook implements IXposedHookLoadPackage {
 
             container.addView(row);
 
-            // 页脚：一行免费声明 + 可点击「项目地址」超链接（防倒卖，点击跳浏览器）
+            SilentJoinStatusView statusView = new SilentJoinStatusView(act, dark);
+            LinearLayout.LayoutParams statusParams =
+                    new LinearLayout.LayoutParams(-1, dp(act, 52));
+            statusParams.setMargins(dp8, 0, dp8, dp(act, 4));
+            container.addView(statusView.getView(), statusParams);
+
+            // 页脚：日志入口 + 免费声明 + 项目地址
             TextView footer = new TextView(act);
-            String prefix = "📢 完全免费 · 禁止倒卖 · ";
+            String logText = "查看日志";
+            String prefix = logText + " · 完全免费 · 禁止倒卖 · ";
             String linkText = "项目地址";
             SpannableString sp = new SpannableString(prefix + linkText);
+            final int linkColor = dark ? 0xFF7AA7FF : 0xFF2B6CE6;
+            sp.setSpan(new ClickableSpan() {
+                @Override
+                public void onClick(View widget) {
+                    new LogViewer(act).onClick(widget);
+                }
+            }, 0, logText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sp.setSpan(new ForegroundColorSpan(linkColor),
+                    0, logText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            sp.setSpan(new UnderlineSpan(),
+                    0, logText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+
             int start = prefix.length();
             int end = start + linkText.length();
-            final int linkColor = dark ? 0xFF7AA7FF : 0xFF2B6CE6;
             sp.setSpan(new ClickableSpan() {
                 @Override
                 public void onClick(View widget) {
@@ -223,6 +241,10 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private void showSilentJoinDialog(final Activity act, final String cid) {
         try {
+            if (SilentJoin.running) {
+                Toaster.show("已有静默加群任务正在运行");
+                return;
+            }
             LinearLayout layout = new LinearLayout(act);
             layout.setOrientation(LinearLayout.VERTICAL);
             int pad = dp(act, 20);
@@ -272,7 +294,10 @@ public class MainHook implements IXposedHookLoadPackage {
         LinearLayout cell = new LinearLayout(act);
         cell.setOrientation(LinearLayout.VERTICAL);
         cell.setGravity(Gravity.CENTER);
-        cell.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1f));
+        LinearLayout.LayoutParams cellParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        int gap = dp(act, 2);
+        cellParams.setMargins(gap, 0, gap, 0);
+        cell.setLayoutParams(cellParams);
         cell.setClickable(true);
         cell.setFocusable(true);
 
