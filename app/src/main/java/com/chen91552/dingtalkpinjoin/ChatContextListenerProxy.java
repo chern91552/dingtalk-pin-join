@@ -12,18 +12,22 @@ public class ChatContextListenerProxy implements InvocationHandler {
     private final String cid;
     private final int attempt;
     private final long taskId;
+    private final RpcWatchdog.Token watchdog;
 
-    private ChatContextListenerProxy(String cid, int attempt, long taskId) {
+    private ChatContextListenerProxy(String cid, int attempt, long taskId,
+                                     RpcWatchdog.Token watchdog) {
         this.cid = cid;
         this.attempt = attempt;
         this.taskId = taskId;
+        this.watchdog = watchdog;
     }
 
-    static Object create(ClassLoader cl, String cid, int attempt, long taskId) throws Exception {
+    static Object create(ClassLoader cl, String cid, int attempt, long taskId,
+                         RpcWatchdog.Token watchdog) throws Exception {
         Class<?> iface = Class.forName(
                 "com.alibaba.android.dingtalkbase.rpc.ApiEventListener", true, cl);
         return Proxy.newProxyInstance(cl, new Class[]{iface},
-                new ChatContextListenerProxy(cid, attempt, taskId));
+                new ChatContextListenerProxy(cid, attempt, taskId, watchdog));
     }
 
     @Override
@@ -31,13 +35,21 @@ public class ChatContextListenerProxy implements InvocationHandler {
         String name = method.getName();
         try {
             if ("onDataReceived".equals(name) && args != null && args.length > 0) {
+                if (!watchdog.claim()) return null;
                 handleData(args[0]);
             } else if ("onException".equals(name) || "onFailure".equals(name)) {
+                if (!watchdog.claim()) return null;
                 NextGroupFetcher.onFetchFailure(
                         cid, attempt, taskId, RetryPolicy.describe(args, "获取置顶卡片失败"));
             }
         } catch (Throwable t) {
             SilentJoin.log("ChatContext proxy ERR: " + t);
+            if ("onDataReceived".equals(name)
+                    || "onException".equals(name)
+                    || "onFailure".equals(name)) {
+                NextGroupFetcher.onFetchFailure(
+                        cid, attempt, taskId, "解析置顶数据失败：" + t);
+            }
         }
         return null;
     }

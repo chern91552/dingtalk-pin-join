@@ -14,19 +14,21 @@ public class SafeCheckCallbackProxy implements InvocationHandler {
     private final String code;
     private final long taskId;
     private final int retryCount;
+    private final RpcWatchdog.Token watchdog;
 
     private SafeCheckCallbackProxy(String cid, Object uid, int origin, String code,
-                                   long taskId, int retryCount) {
+                                   long taskId, int retryCount, RpcWatchdog.Token watchdog) {
         this.cid = cid;
         this.uid = uid;
         this.origin = origin;
         this.code = code;
         this.taskId = taskId;
         this.retryCount = retryCount;
+        this.watchdog = watchdog;
     }
 
     static Object create(ClassLoader cl, String cid, Object uid, int origin, String code,
-                         long taskId, int retryCount) {
+                         long taskId, int retryCount, RpcWatchdog.Token watchdog) {
         Class<?> iface;
         try {
             iface = Class.forName("com.alibaba.wukong.Callback", true, cl);
@@ -34,12 +36,14 @@ public class SafeCheckCallbackProxy implements InvocationHandler {
             throw new RuntimeException("Callback not found", e);
         }
         return Proxy.newProxyInstance(cl, new Class[]{iface},
-                new SafeCheckCallbackProxy(cid, uid, origin, code, taskId, retryCount));
+                new SafeCheckCallbackProxy(
+                        cid, uid, origin, code, taskId, retryCount, watchdog));
     }
 
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) {
         String name = method.getName();
+        if (isTerminal(name) && !watchdog.claim()) return null;
         if (!SilentJoin.isActive(taskId)) return null;
         try {
             if ("onSuccess".equals(name) && args != null && args.length > 0) {
@@ -75,5 +79,11 @@ public class SafeCheckCallbackProxy implements InvocationHandler {
             SilentJoin.onError(taskId, "安全检查失败");
         }
         return null;
+    }
+
+    private static boolean isTerminal(String name) {
+        return "onSuccess".equals(name)
+                || "onFailure".equals(name)
+                || "onException".equals(name);
     }
 }

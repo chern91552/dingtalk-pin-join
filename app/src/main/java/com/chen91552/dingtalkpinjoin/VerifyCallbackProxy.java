@@ -12,15 +12,19 @@ public class VerifyCallbackProxy implements InvocationHandler {
     private final int origin;
     private final long taskId;
     private final int retryCount;
+    private final RpcWatchdog.Token watchdog;
 
-    private VerifyCallbackProxy(String code, int origin, long taskId, int retryCount) {
+    private VerifyCallbackProxy(String code, int origin, long taskId, int retryCount,
+                                RpcWatchdog.Token watchdog) {
         this.code = code;
         this.origin = origin;
         this.taskId = taskId;
         this.retryCount = retryCount;
+        this.watchdog = watchdog;
     }
 
-    static Object create(ClassLoader cl, String code, int origin, long taskId, int retryCount) {
+    static Object create(ClassLoader cl, String code, int origin, long taskId, int retryCount,
+                         RpcWatchdog.Token watchdog) {
         Class<?> iface;
         try {
             iface = Class.forName("com.alibaba.wukong.Callback", true, cl);
@@ -28,12 +32,13 @@ public class VerifyCallbackProxy implements InvocationHandler {
             throw new RuntimeException("Callback not found", e);
         }
         return Proxy.newProxyInstance(cl, new Class[]{iface},
-                new VerifyCallbackProxy(code, origin, taskId, retryCount));
+                new VerifyCallbackProxy(code, origin, taskId, retryCount, watchdog));
     }
 
     @Override
     public Object invoke(Object proxy, Method method, Object[] args) {
         String name = method.getName();
+        if (isTerminal(name) && !watchdog.claim()) return null;
         if (!SilentJoin.isActive(taskId)) return null;
         try {
             if ("onSuccess".equals(name) && args != null && args.length > 0) {
@@ -94,5 +99,11 @@ public class VerifyCallbackProxy implements InvocationHandler {
             SilentJoin.onError(taskId, "验证失败");
         }
         return null;
+    }
+
+    private static boolean isTerminal(String name) {
+        return "onSuccess".equals(name)
+                || "onFailure".equals(name)
+                || "onException".equals(name);
     }
 }

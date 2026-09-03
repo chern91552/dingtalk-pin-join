@@ -15,11 +15,12 @@ public class JoinCallbackProxy implements InvocationHandler {
     private final String code;
     private final long taskId;
     private final int retryCount;
+    private final RpcWatchdog.Token watchdog;
     private Object filterChain;
     private Object requestBuilder;
 
     private JoinCallbackProxy(String cid, Object uid, int origin, String token, String code,
-                              long taskId, int retryCount) {
+                              long taskId, int retryCount, RpcWatchdog.Token watchdog) {
         this.cid = cid;
         this.uid = uid;
         this.origin = origin;
@@ -27,10 +28,12 @@ public class JoinCallbackProxy implements InvocationHandler {
         this.code = code;
         this.taskId = taskId;
         this.retryCount = retryCount;
+        this.watchdog = watchdog;
     }
 
     static Object create(ClassLoader cl, String cid, Object uid, int origin, String token,
-                         String code, long taskId, int retryCount) {
+                         String code, long taskId, int retryCount,
+                         RpcWatchdog.Token watchdog) {
         Class<?> iface;
         try {
             iface = Class.forName("com.laiwang.idl.client.RequestHandler", true, cl);
@@ -39,7 +42,7 @@ public class JoinCallbackProxy implements InvocationHandler {
         }
         return Proxy.newProxyInstance(cl, new Class[]{iface},
                 new JoinCallbackProxy(
-                        cid, uid, origin, token, code, taskId, retryCount));
+                        cid, uid, origin, token, code, taskId, retryCount, watchdog));
     }
 
     @Override
@@ -48,11 +51,13 @@ public class JoinCallbackProxy implements InvocationHandler {
         try {
             switch (name) {
                 case "onSuccess":
+                    if (!watchdog.claim()) break;
                     SilentJoin.onJoinOk(cid, taskId);
                     break;
                 case "caught":
                 case "onException":
                 case "onFailure":
+                    if (!watchdog.claim()) break;
                     String error = RetryPolicy.describe(args, "加群失败");
                     if (args != null && args.length > 0 && args[0] != null) {
                         try {
@@ -74,7 +79,9 @@ public class JoinCallbackProxy implements InvocationHandler {
                 case "handleRequest":
                     return Boolean.TRUE;
                 case "onInvoke":
-                    if (args != null && args.length > 0 && args[0] instanceof Runnable) {
+                    if (SilentJoin.isActive(taskId)
+                            && args != null && args.length > 0
+                            && args[0] instanceof Runnable) {
                         ((Runnable) args[0]).run();
                     }
                     break;

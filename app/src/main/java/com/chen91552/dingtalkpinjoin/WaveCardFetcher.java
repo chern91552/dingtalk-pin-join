@@ -84,11 +84,20 @@ public class WaveCardFetcher {
             // callback proxy
             Class<?> callbackCls = Class.forName(
                     "com.dingtalk.nest.wave_card.WaveCardModelListCallBack", true, cl);
+            RpcWatchdog.Token watchdog = RpcWatchdog.arm(
+                    taskId, "读取卡片",
+                    () -> onWaveCardFailure(
+                            "请求超时", cid, boxes, retryCount, taskId));
             Object callback = WaveCardCallbackProxy.create(
-                    cl, callbackCls, cid, boxes, taskId, retryCount);
+                    cl, callbackCls, cid, boxes, taskId, retryCount, watchdog);
 
             // rwm.q(svc, paramList, callback)
-            XposedHelpers.callStaticMethod(rwm, "q", svc, paramList, callback);
+            try {
+                XposedHelpers.callStaticMethod(rwm, "q", svc, paramList, callback);
+            } catch (Throwable t) {
+                watchdog.claim();
+                throw t;
+            }
             SilentJoin.log("WaveCard fetch sent count=" + paramList.size());
         } catch (Throwable t) {
             SilentJoin.log("WaveCardFetcher ERR: " + t);
@@ -164,7 +173,7 @@ public class WaveCardFetcher {
      *   ② 兜底：全文正则找 joingroup 链接，URLDecode 后再判 code=，
      *      覆盖未列到的新键名、以及链接被 encode 进 deeplink（code%3D）的情况。
      */
-    private static String pickLink(String cardData) {
+    static String pickLink(String cardData) {
         // ① 快路径：候选键 + 明文 code=
         for (String key : LINK_KEYS) {
             String v = jstr(cardData, key);

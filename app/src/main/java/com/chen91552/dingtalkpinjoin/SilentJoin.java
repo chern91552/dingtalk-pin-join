@@ -19,6 +19,8 @@ public class SilentJoin {
 
     public static volatile boolean running;
     public static volatile boolean clearUnread;
+    public static volatile boolean muteNewGroups;
+    public static volatile boolean muteAtAll;
     public static volatile int target;
     public static volatile int joinedCount;
     public static volatile int alreadyJoinedCount;
@@ -39,9 +41,18 @@ public class SilentJoin {
     private static volatile String statusDetail = "";
     private static volatile long statusExpiresAt;
 
-    public static synchronized void start(String cid, int count, boolean clearUnreadFlag) {
+    public static synchronized void start(String cid, int count, boolean clearUnreadFlag,
+                                          boolean muteNewGroupsFlag, boolean muteAtAllFlag) {
         if (running) {
             Toaster.show("已有静默加群任务正在运行");
+            return;
+        }
+        if (JoinLoop.running) {
+            Toaster.show("请先停止置顶加群任务");
+            return;
+        }
+        if (ForestAudit.isRunning()) {
+            Toaster.show("请先停止置顶查证任务");
             return;
         }
         long taskId = TASK_SEQUENCE.incrementAndGet();
@@ -52,6 +63,8 @@ public class SilentJoin {
         statusExpiresAt = 0L;
         target = count;
         clearUnread = clearUnreadFlag;
+        muteNewGroups = muteNewGroupsFlag;
+        muteAtAll = muteNewGroupsFlag && muteAtAllFlag;
         joinedCount = 0;
         alreadyJoinedCount = 0;
         newlyJoinedCount = 0;
@@ -65,7 +78,9 @@ public class SilentJoin {
         joinedCids.clear();
         notifyStatusChanged();
 
-        summary("静默加群开始，共 " + count + " 个");
+        summary("静默加群开始，共 " + count + " 个"
+                + "（免打扰：" + optionText(muteNewGroups)
+                + "，@所有人不提醒：" + optionText(muteAtAll) + "）");
         Toaster.show("🔇 静默加群开始，共 " + count + " 个");
         log("start cid=" + cid + " N=" + count);
 
@@ -74,6 +89,7 @@ public class SilentJoin {
 
     public static synchronized void stop() {
         if (!running) return;
+        long stoppedTaskId = activeTaskId;
         int stoppedAt = joinedCount;
         running = false;
         activeTaskId = TASK_SEQUENCE.incrementAndGet();
@@ -81,6 +97,7 @@ public class SilentJoin {
         statusDetail = "已停止 " + stoppedAt + "/" + target;
         statusExpiresAt = android.os.SystemClock.elapsedRealtime() + TERMINAL_STATUS_VISIBLE_MS;
         NextGroupFetcher.cancelAll();
+        GroupNotificationSettings.cancel(stoppedTaskId);
         String msg = "用户停止静默加群，已成功处理 " + stoppedAt + "/" + target + " 个群";
         summary("[停止] " + msg);
         summary(buildStatistics());
@@ -92,6 +109,7 @@ public class SilentJoin {
     public static synchronized void onError(long taskId, String msg) {
         if (!isActive(taskId)) return;
         running = false;
+        GroupNotificationSettings.cancel(taskId);
         status = STATUS_ERROR;
         statusDetail = "异常停止 " + joinedCount + "/" + target + " · " + msg;
         statusExpiresAt = android.os.SystemClock.elapsedRealtime() + TERMINAL_STATUS_VISIBLE_MS;
@@ -142,9 +160,23 @@ public class SilentJoin {
                     "com.alibaba.wukong.im.IMEngine", cl);
             Object svc = XposedHelpers.callStaticMethod(imEngine, "getIMService", svcCls);
 
+            RpcWatchdog.Token watchdog = RpcWatchdog.arm(
+                    taskId, "校验邀请码", () -> {
+                        if (!RetryPolicy.retryIfTransient(
+                                taskId, "校验邀请码", retryCount, "请求超时",
+                                () -> verifyCode(
+                                        code, origin, taskId, retryCount + 1))) {
+                            onError(taskId, "验证邀请码超时");
+                        }
+                    });
             Object callback = VerifyCallbackProxy.create(
-                    cl, code, originInt, taskId, retryCount);
-            XposedHelpers.callMethod(svc, "verifyCodeV2", callback, model);
+                    cl, code, originInt, taskId, retryCount, watchdog);
+            try {
+                XposedHelpers.callMethod(svc, "verifyCodeV2", callback, model);
+            } catch (Throwable t) {
+                watchdog.claim();
+                throw t;
+            }
             log("verifyCode sent: " + code);
         } catch (Throwable t) {
             log("verifyCode ERR: " + t);
@@ -164,7 +196,7 @@ public class SilentJoin {
         synchronized (SilentJoin.class) {
             if (!isActive(taskId)) return;
             if (!joinedCids.add(cid)) {
-                onAlreadyJoin(cid, taskId);
+                onAlreadyJoined(cid, taskId);
                 return;
             }
         }
@@ -179,7 +211,7 @@ public class SilentJoin {
             Object svc = XposedHelpers.callStaticMethod(imEngine, "getIMService", svcCls);
             Object existing = XposedHelpers.callMethod(svc, "getConversationFromMemory", cid);
             if (existing != null) {
-                onAlreadyJoin(cid, taskId);
+                onAlreadyJoined(cid, taskId);
                 return;
             }
         } catch (Throwable ignored) {}
@@ -211,9 +243,23 @@ public class SilentJoin {
             Object safeSvc = XposedHelpers.callStaticMethod(
                     imEngine, "getIMService", safeSvcCls);
 
+            RpcWatchdog.Token watchdog = RpcWatchdog.arm(
+                    taskId, "安全检查", () -> {
+                        if (!RetryPolicy.retryIfTransient(
+                                taskId, "安全检查", retryCount, "请求超时",
+                                () -> requestSafeCheck(
+                                        cid, uid, origin, code, taskId, retryCount + 1))) {
+                            onError(taskId, "安全检查超时");
+                        }
+                    });
             Object safeCb = SafeCheckCallbackProxy.create(
-                    cl, cid, uid, origin, code, taskId, retryCount);
-            XposedHelpers.callMethod(safeSvc, "preJoinGroupSafeCheck", safeReq, safeCb);
+                    cl, cid, uid, origin, code, taskId, retryCount, watchdog);
+            try {
+                XposedHelpers.callMethod(safeSvc, "preJoinGroupSafeCheck", safeReq, safeCb);
+            } catch (Throwable t) {
+                watchdog.claim();
+                throw t;
+            }
             log("safeCheck sent cid=" + cid);
         } catch (Throwable t) {
             log("safeCheck ERR: " + t);
@@ -250,9 +296,24 @@ public class SilentJoin {
             Class<?> uzi = XposedHelpers.findClass("uzi", cl);
             Object svc = XposedHelpers.callStaticMethod(uzi, "a", svcCls);
 
+            RpcWatchdog.Token watchdog = RpcWatchdog.arm(
+                    taskId, "提交加群", () -> {
+                        if (!RetryPolicy.retryIfTransient(
+                                taskId, "提交加群", retryCount, "请求超时",
+                                () -> doAddMember(
+                                        cid, uid, origin, token, code,
+                                        taskId, retryCount + 1))) {
+                            onError(taskId, "加群请求超时");
+                        }
+                    });
             Object handler = JoinCallbackProxy.create(
-                    cl, cid, uid, origin, token, code, taskId, retryCount);
-            XposedHelpers.callMethod(svc, "addGroupMemberByQrcodeV4", req, handler);
+                    cl, cid, uid, origin, token, code, taskId, retryCount, watchdog);
+            try {
+                XposedHelpers.callMethod(svc, "addGroupMemberByQrcodeV4", req, handler);
+            } catch (Throwable t) {
+                watchdog.claim();
+                throw t;
+            }
             log("addGroupMember sent cid=" + cid);
         } catch (Throwable t) {
             log("doAddMember ERR: " + t);
@@ -277,6 +338,9 @@ public class SilentJoin {
         notifyStatusChanged();
 
         if (clearUnread) clearUnreadAsync(cid);
+        if (muteNewGroups) {
+            GroupNotificationSettings.apply(cid, muteAtAll, taskId);
+        }
 
         if (joinedCount % 5 == 0) {
             Toaster.show("✅ 已静默加入第 " + joinedCount + " 个群");
@@ -289,7 +353,7 @@ public class SilentJoin {
         NextGroupFetcher.schedule(cid, taskId);
     }
 
-    static synchronized void onAlreadyJoin(String cid, long taskId) {
+    static synchronized void onAlreadyJoined(String cid, long taskId) {
         if (!isActive(taskId)) return;
 
         joinedCount++;
@@ -301,6 +365,9 @@ public class SilentJoin {
         notifyStatusChanged();
 
         if (clearUnread) clearUnreadAsync(cid);
+        if (muteNewGroups) {
+            GroupNotificationSettings.apply(cid, muteAtAll, taskId);
+        }
 
         if (joinedCount % 5 == 0) {
             Toaster.show("✅ 已加群第 " + joinedCount + " 个群");
@@ -316,6 +383,10 @@ public class SilentJoin {
 
     private static void clearUnreadAsync(String cid) {
         UnreadClearer.start(cid);
+    }
+
+    private static String optionText(boolean enabled) {
+        return enabled ? "开" : "关";
     }
 
     static synchronized void finish(long taskId) {

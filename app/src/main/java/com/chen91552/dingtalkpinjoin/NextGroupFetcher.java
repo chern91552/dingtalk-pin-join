@@ -42,7 +42,7 @@ public class NextGroupFetcher {
         }).start();
     }
 
-    private static void fetchChatContext(String cid, int attempt, long taskId) throws Exception {
+    private static void fetchChatContext(String cid, int attempt, long taskId) throws Throwable {
         ClassLoader cl = MainHook.getClassLoader();
 
         Class<?> q8i = Class.forName("q8i", true, cl);
@@ -57,8 +57,17 @@ public class NextGroupFetcher {
         ArrayList<Object> list = new ArrayList<>();
         list.add(req);
 
-        Object listener = ChatContextListenerProxy.create(cl, cid, attempt, taskId);
-        XposedHelpers.callMethod(api, "getChatContextByTypes", cid, list, listener);
+        RpcWatchdog.Token watchdog = RpcWatchdog.arm(
+                taskId, "读取置顶",
+                () -> onFetchFailure(cid, attempt, taskId, "请求超时"));
+        Object listener = ChatContextListenerProxy.create(
+                cl, cid, attempt, taskId, watchdog);
+        try {
+            XposedHelpers.callMethod(api, "getChatContextByTypes", cid, list, listener);
+        } catch (Throwable t) {
+            watchdog.claim();
+            throw t;
+        }
     }
 
     static void onChatContextResult(String cid, ArrayList<WaveCardFetcher.BoxRef> boxes,

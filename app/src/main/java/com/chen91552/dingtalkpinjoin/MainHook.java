@@ -10,6 +10,7 @@ import android.graphics.drawable.StateListDrawable;
 import android.net.Uri;
 import android.text.SpannableString;
 import android.text.Spanned;
+import android.text.TextUtils;
 import android.text.method.LinkMovementMethod;
 import android.text.style.ClickableSpan;
 import android.text.style.ForegroundColorSpan;
@@ -109,14 +110,9 @@ public class MainHook implements IXposedHookLoadPackage {
             android.util.Log.e(TAG, "hook ConversationSettingsActivity FAIL: " + e);
         }
 
-        // Hook rwm.h() —— 卡片渲染时捕获 nexturl（静默加群用）
-        try {
-            Class<?> rwm = XposedHelpers.findClass("rwm", cl);
-            XposedBridge.hookAllMethods(rwm, "h", new DurboProbe());
-            android.util.Log.i(TAG, "hook rwm.h OK");
-        } catch (Throwable e) {
-            android.util.Log.e(TAG, "hook rwm.h FAIL: " + e);
-        }
+        // SilentJoin fetches card data explicitly through NextGroupFetcher.
+        // Do not consume passive render callbacks: opening another group while a
+        // task is running must not redirect the background chain to that group.
     }
 
     // ==================== 全局 Activity 跟踪 ====================
@@ -160,37 +156,60 @@ public class MainHook implements IXposedHookLoadPackage {
 
             boolean dark = isDarkMode(act);
 
-            // 水平包裹容器
-            LinearLayout row = new LinearLayout(act);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
             int dp8 = dp(act, 8);
-            row.setPadding(dp8, dp8, dp8, dp8);
+            LinearLayout featureRow = new LinearLayout(act);
+            featureRow.setOrientation(LinearLayout.HORIZONTAL);
+            featureRow.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+            featureRow.setPadding(dp(act, 4), dp(act, 4), dp(act, 4), dp(act, 4));
 
-            View btnJoin = buildGridCell(act, "🔁\n从本群加群", "连续点击置顶卡片", dark);
-            btnJoin.setOnClickListener(new JoinLoop(act, cid));
-            row.addView(btnJoin);
+            View btnJoin = buildGridCell(
+                    act, "🔁\n置顶加群", "前台点击卡片\n连续加入群聊", dark);
+            btnJoin.setOnClickListener(v -> {
+                if (!rejectWhenTaskRunning()) {
+                    new JoinLoop(act, cid).onClick(v);
+                }
+            });
+            featureRow.addView(btnJoin);
 
-            View btnSilent = buildGridCell(act, "🔇\n静默加群", "后台连续加群不跳页", dark);
+            View btnSilent = buildGridCell(
+                    act, "🔇\n静默加群", "后台静默执行\n连续加入群聊", dark);
             btnSilent.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
                     showSilentJoinDialog(act, cid);
                 }
             });
-            row.addView(btnSilent);
+            featureRow.addView(btnSilent);
 
-            View btnLink = buildGridCell(act, "🔗\n提取本群链接", "复制邀请链接到剪贴板", dark);
+            View btnAudit = buildGridCell(
+                    act, "🔎\n置顶查证", "沿置顶逐群查\n公益树和证书", dark);
+            btnAudit.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showForestAuditDialog(act, cid);
+                }
+            });
+            featureRow.addView(btnAudit);
+
+            View btnLink = buildGridCell(
+                    act, "🔗\n提取链接", "提取当前群的\n邀请链接", dark);
             btnLink.setOnClickListener(new ProbeLink(act, cid));
-            row.addView(btnLink);
+            featureRow.addView(btnLink);
 
-            container.addView(row);
+            container.addView(featureRow);
 
             SilentJoinStatusView statusView = new SilentJoinStatusView(act, dark);
             LinearLayout.LayoutParams statusParams =
                     new LinearLayout.LayoutParams(-1, dp(act, 52));
             statusParams.setMargins(dp8, 0, dp8, dp(act, 4));
             container.addView(statusView.getView(), statusParams);
+
+            ForestAuditStatusView auditStatusView =
+                    new ForestAuditStatusView(act, dark);
+            LinearLayout.LayoutParams auditStatusParams =
+                    new LinearLayout.LayoutParams(-1, dp(act, 52));
+            auditStatusParams.setMargins(dp8, 0, dp8, dp(act, 4));
+            container.addView(auditStatusView.getView(), auditStatusParams);
 
             // 页脚：日志入口 + 免费声明 + 项目地址
             TextView footer = new TextView(act);
@@ -199,16 +218,19 @@ public class MainHook implements IXposedHookLoadPackage {
             String linkText = "项目地址";
             SpannableString sp = new SpannableString(prefix + linkText);
             final int linkColor = dark ? 0xFF7AA7FF : 0xFF2B6CE6;
+
+            int logStart = 0;
+            int logEnd = logStart + logText.length();
             sp.setSpan(new ClickableSpan() {
                 @Override
                 public void onClick(View widget) {
                     new LogViewer(act).onClick(widget);
                 }
-            }, 0, logText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            }, logStart, logEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             sp.setSpan(new ForegroundColorSpan(linkColor),
-                    0, logText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    logStart, logEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
             sp.setSpan(new UnderlineSpan(),
-                    0, logText.length(), Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                    logStart, logEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
 
             int start = prefix.length();
             int end = start + linkText.length();
@@ -239,12 +261,34 @@ public class MainHook implements IXposedHookLoadPackage {
 
     // ==================== 静默加群弹窗 ====================
 
+    private void showForestAuditDialog(final Activity act, final String cid) {
+        if (rejectWhenTaskRunning()) return;
+        final EditText input = new EditText(act);
+        input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        input.setText("3");
+        input.selectAll();
+        int pad = dp(act, 20);
+        LinearLayout wrapper = new LinearLayout(act);
+        wrapper.setPadding(pad, dp(act, 8), pad, 0);
+        wrapper.addView(input, new LinearLayout.LayoutParams(-1, -2));
+        new AlertDialog.Builder(act)
+                .setTitle("置顶查证")
+                .setMessage("输入沿置顶链接连续查询的群数量")
+                .setView(wrapper)
+                .setPositiveButton("开始", (dialog, which) -> {
+                    int count = 3;
+                    try {
+                        count = Integer.parseInt(input.getText().toString().trim());
+                    } catch (Throwable ignored) {}
+                    ForestAudit.start(cid, Math.max(1, count));
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
     private void showSilentJoinDialog(final Activity act, final String cid) {
         try {
-            if (SilentJoin.running) {
-                Toaster.show("已有静默加群任务正在运行");
-                return;
-            }
+            if (rejectWhenTaskRunning()) return;
             LinearLayout layout = new LinearLayout(act);
             layout.setOrientation(LinearLayout.VERTICAL);
             int pad = dp(act, 20);
@@ -265,6 +309,21 @@ public class MainHook implements IXposedHookLoadPackage {
             cb.setLayoutParams(cbp);
             layout.addView(cb);
 
+            final CheckBox mute = new CheckBox(act);
+            mute.setText("处理到的群设为消息免打扰");
+            mute.setChecked(false);
+            layout.addView(mute);
+
+            final CheckBox muteAtAll = new CheckBox(act);
+            muteAtAll.setText("@所有人消息不提醒");
+            muteAtAll.setChecked(false);
+            muteAtAll.setEnabled(false);
+            mute.setOnCheckedChangeListener((buttonView, isChecked) -> {
+                muteAtAll.setEnabled(isChecked);
+                if (!isChecked) muteAtAll.setChecked(false);
+            });
+            layout.addView(muteAtAll);
+
             new AlertDialog.Builder(act)
                     .setTitle("🔇 静默循环加群")
                     .setMessage("输入要静默加入的群数量（无需打开页面）")
@@ -276,13 +335,21 @@ public class MainHook implements IXposedHookLoadPackage {
                             if (!text.isEmpty()) n = Integer.parseInt(text);
                         } catch (Exception ignored) {}
                         if (n < 1) n = 1;
-                        SilentJoin.start(cid, n, cb.isChecked());
+                        SilentJoin.start(
+                                cid, n, cb.isChecked(),
+                                mute.isChecked(), muteAtAll.isChecked());
                     })
                     .setNegativeButton("取消", null)
                     .show();
         } catch (Exception e) {
             android.util.Log.e("PinJoin", "silent dialog ERR: " + e);
         }
+    }
+
+    private boolean rejectWhenTaskRunning() {
+        if (!JoinLoop.running && !SilentJoin.running && !ForestAudit.isRunning()) return false;
+        Toaster.show("已有任务正在进行，请先停止");
+        return true;
     }
 
     // ==================== UI 工具方法 ====================
@@ -294,9 +361,10 @@ public class MainHook implements IXposedHookLoadPackage {
         LinearLayout cell = new LinearLayout(act);
         cell.setOrientation(LinearLayout.VERTICAL);
         cell.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams cellParams = new LinearLayout.LayoutParams(0, -2, 1f);
-        int gap = dp(act, 2);
-        cellParams.setMargins(gap, 0, gap, 0);
+        LinearLayout.LayoutParams cellParams =
+                new LinearLayout.LayoutParams(0, dp(act, 96), 1f);
+        int gap = dp(act, 3);
+        cellParams.setMargins(gap, dp(act, 4), gap, dp(act, 4));
         cell.setLayoutParams(cellParams);
         cell.setClickable(true);
         cell.setFocusable(true);
@@ -313,6 +381,7 @@ public class MainHook implements IXposedHookLoadPackage {
         tvTitle.setText(title);
         tvTitle.setTextSize(14);
         tvTitle.setGravity(Gravity.CENTER);
+        tvTitle.setMaxLines(2);
         tvTitle.setTextColor(dark ? 0xFFCCCCCC : 0xFF333333);
         tvTitle.setPadding(0, 0, 0, dp4);
         cell.addView(tvTitle);
@@ -322,6 +391,8 @@ public class MainHook implements IXposedHookLoadPackage {
         tvSub.setText(subtitle);
         tvSub.setTextSize(10);
         tvSub.setGravity(Gravity.CENTER);
+        tvSub.setMaxLines(2);
+        tvSub.setEllipsize(TextUtils.TruncateAt.END);
         tvSub.setTextColor(dark ? 0xFF888888 : 0xFF999999);
         cell.addView(tvSub);
 
