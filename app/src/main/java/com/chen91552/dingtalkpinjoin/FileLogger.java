@@ -1,9 +1,16 @@
 package com.chen91552.dingtalkpinjoin;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileWriter;
+import java.io.InputStreamReader;
+import java.io.BufferedReader;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -13,7 +20,7 @@ import java.util.Locale;
  * 2 = summary（摘要日志：开始/每个群/完成/停止原因，只写文件不打 logcat），
  * 5 = system（详细调试日志）
  * <p>
- * 日志文件按日期切分，自动清理超过保留天数的旧文件。
+ * 日志文件按日期切分，自动清理非当日文件。
  */
 public class FileLogger {
 
@@ -152,5 +159,53 @@ public class FileLogger {
     public static void e(int cat, String tag, String msg) {
         android.util.Log.e(tag, msg);
         write(cat, msg);
+    }
+
+    /**
+     * 返回指定分类已有日志的日期，按新到旧排序。
+     */
+    public static synchronized List<String> listAvailableDates(int cat) {
+        List<String> dates = new ArrayList<>();
+        if (logDir == null) return dates;
+
+        String prefix = categoryName(cat) + "_";
+        File[] files = new File(logDir).listFiles((dir, name) ->
+                name.startsWith(prefix) && name.endsWith(".log"));
+        if (files != null) {
+            for (File file : files) {
+                String name = file.getName();
+                String date = name.substring(prefix.length(), name.length() - 4);
+                if (date.matches("\\d{8}")) dates.add(date);
+            }
+        }
+        Collections.sort(dates, Collections.reverseOrder());
+        return dates;
+    }
+
+    /**
+     * 读取所选日期的完整日志。
+     */
+    public static synchronized String readAll(int cat, String date) {
+        if (logDir == null || date == null || !date.matches("\\d{8}")) return "";
+
+        File file = new File(logDir, categoryName(cat) + "_" + date + ".log");
+        if (!file.isFile()) return "";
+
+        StringBuilder content = new StringBuilder((int) Math.min(file.length(), 1024 * 1024));
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                new FileInputStream(file), StandardCharsets.UTF_8))) {
+            char[] buffer = new char[8192];
+            int count;
+            while ((count = reader.read(buffer)) >= 0) {
+                content.append(buffer, 0, count);
+            }
+            return content.toString();
+        } catch (Exception e) {
+            return "读取日志失败：" + e.getMessage();
+        }
+    }
+
+    private static String categoryName(int cat) {
+        return cat == CAT_SUMMARY ? NAME_SUMMARY : NAME_SYSTEM;
     }
 }

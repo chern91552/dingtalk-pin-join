@@ -1,6 +1,20 @@
+import java.util.Properties
+
 plugins {
     id 'com.android.application'
 }
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.isFile()) {
+    localPropertiesFile.withInputStream { localProperties.load(it) }
+}
+def releaseSigningConfigured = [
+        'pinjoin.storeFile',
+        'pinjoin.storePassword',
+        'pinjoin.keyAlias',
+        'pinjoin.keyPassword',
+].every { localProperties.getProperty(it) }
 
 android {
     namespace 'com.chen91552.dingtalkpinjoin'
@@ -10,26 +24,32 @@ android {
         applicationId "com.chen91552.dingtalkpinjoin"
         minSdk 24
         targetSdk 34
-        versionCode 3
-        versionName "2.1.0"
+        versionCode 20
+        versionName "3.0.0"
     }
 
     signingConfigs {
-        release {
-            storeFile file("../pinjoin.keystore")
-            storePassword "android"
-            keyAlias "pinjoin"
-            keyPassword "android"
+        if (releaseSigningConfigured) {
+            release {
+                storeFile rootProject.file(localProperties.getProperty('pinjoin.storeFile'))
+                storePassword localProperties.getProperty('pinjoin.storePassword')
+                keyAlias localProperties.getProperty('pinjoin.keyAlias')
+                keyPassword localProperties.getProperty('pinjoin.keyPassword')
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig signingConfigs.release
+            if (releaseSigningConfigured) {
+                signingConfig signingConfigs.release
+            }
         }
         release {
             minifyEnabled false
-            signingConfig signingConfigs.release
+            if (releaseSigningConfigured) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 
@@ -40,7 +60,10 @@ android {
 }
 
 dependencies {
-    compileOnly 'de.robv.android.xposed:api:82'
-    // 兜底：Maven 仓库不可达时使用本地 jar
-    compileOnly files('libs/api-82.jar')
+    def localXposedApi = file('libs/api-82.jar')
+    if (localXposedApi.exists()) {
+        compileOnly files(localXposedApi)
+    } else {
+        compileOnly 'de.robv.android.xposed:api:82'
+    }
 }

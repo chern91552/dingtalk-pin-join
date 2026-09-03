@@ -74,6 +74,10 @@ public class JoinLoop implements Runnable, View.OnClickListener, DialogInterface
     @Override
     public void onClick(View v) {
         try {
+            if (running || SilentJoin.running || ForestAudit.isRunning()) {
+                Toaster.show("已有任务正在进行，请先停止");
+                return;
+            }
             EditText input = new EditText(act);
             input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
             input.setText(String.valueOf(savedCount(act)));
@@ -99,6 +103,10 @@ public class JoinLoop implements Runnable, View.OnClickListener, DialogInterface
     @Override
     public void onClick(DialogInterface dialog, int which) {
         if (et == null) return;
+        if (running || SilentJoin.running || ForestAudit.isRunning()) {
+            Toaster.show("已有任务正在进行，请先停止");
+            return;
+        }
 
         int count = 10;
         try {
